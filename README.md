@@ -67,11 +67,22 @@ fork 自 [egoist/mygo-cloudmusic](https://github.com/egoist/mygo-cloudmusic)，�
 
 ## 三、下载
 
-最新 Windows 版：[Releases · windows-0.1.24](https://github.com/qq1131909103/mygo-cloudmusic/releases/tag/windows-0.1.24)
+[Releases · windows-0.1.24](https://github.com/qq1131909103/mygo-cloudmusic/releases/tag/windows-0.1.24)
+
+**exe 安装包（推荐）**：[`MyGo-CloudMusic-0.1.24-windows-amd64-setup.exe`](https://github.com/qq1131909103/mygo-cloudmusic/releases/download/windows-0.1.24/MyGo-CloudMusic-0.1.24-windows-amd64-setup.exe)
+
+- 双击安装，默认装到 `%LOCALAPPDATA%\Programs\MyGo 云音乐`，不需要管理员权限
+- 自带 `Uninstall.exe`，会写入「设置 → 应用」
+- 支持静默安装：`setup.exe /S /D=自定义路径`
+
+**不想安装**：下 `MyGo-CloudMusic-0.1.24-windows-amd64-portable.zip` 解压即用，或直接下单个 `MyGo-CloudMusic-0.1.24-windows-amd64.exe`。
 
 | 附件 | 说明 |
 | --- | --- |
-| `MyGo-CloudMusic-0.1.24-windows-amd64.zip` | Windows 安装包（含 `install.ps1` 与安装器 exe） |
+| `MyGo-CloudMusic-0.1.24-windows-amd64-setup.exe` | exe 安装包（NSIS，8.4 MB） |
+| `MyGo-CloudMusic-0.1.24-windows-amd64.exe` | 免安装单文件主程序（25.8 MB） |
+| `MyGo-CloudMusic-0.1.24-windows-amd64-portable.zip` | 便携版（主程序 + 图标） |
+| `install.ps1` | 命令行安装脚本 |
 | `MyGo-CloudMusic-0.1.24-source.zip` | 完整源码快照 |
 | `MyGo-CloudMusic-0.1.24-third-party-sources.patch` | 相对上游 `2b6673e` 的补丁 |
 | `FEATURES.md` / `FEATURES-screenshots.zip` | 图文说明与截图 |
