@@ -18,6 +18,11 @@
 - 刘海播放器：在屏幕顶部刘海处显示迷你播放器，悬停展开（在设置中开启）
 - 喜欢歌曲、播放队列、随机与循环播放
 - 浅色 / 深色 / 跟随系统
+- 第三方音源：洛雪（LX）脚本、HTTP 接口、歌单链接、本机文件夹，网易云给不出流的歌交给它们取流；搜索可指定音源
+- 本地音乐页：扫描本机音乐，支持 MP3 / FLAC / OGG / WAV，以及装有 ffmpeg 时的 WMA / M4A / AAC / OPUS / APE 等；封面歌词按歌名歌手自动补齐
+- 列表与播放页的下载按钮，从最高音质逐级降级，文件连同封面歌词一起落盘
+- 歌词时间偏移：现场版、翻录的歌词对不上时，用窗口右侧的箭头逐 0.1 秒微调
+- 窗口置顶开关
 
 ## 构建
 
@@ -35,6 +40,14 @@ go test ./...        # 运行测试
 - [NeteaseCloudMusicApi](https://github.com/Binaryify/NeteaseCloudMusicApi)：eapi 加密与登录流程的参考
 - [folia-major](https://github.com/chthollyphile/folia-major)：歌词动画效果的参考
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)、[Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) 与 [Silero VAD](https://github.com/snakers4/silero-vad)：本机语音识别
+- [goja](https://github.com/dop251/goja)：洛雪音源脚本的 JS 运行时
+- [oggvorbis](https://github.com/jfreymuth/oggvorbis)：Ogg Vorbis 解码
+- [FFmpeg](https://ffmpeg.org)：WMA / M4A 等格式的解码，由本机已装的 ffmpeg 提供
+
+## 贡献者
+
+- [@qq1131909103](https://github.com/qq1131909103)：第三方音源、本地音乐、下载、歌词偏移、窗口置顶
+- **DeepSeek**：参与上述功能的实现与测试
 
 本项目与网易云音乐官方无关，音乐版权归各权利人所有。
 
