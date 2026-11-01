@@ -104,6 +104,11 @@ func (a *app) likeCurrent() {
 	if tr == nil {
 		return
 	}
+	if tr.PlayURL != "" {
+		// A song of a source: the app keeps the list itself, and says so.
+		a.toggleSourceLike(tr)
+		return
+	}
 	a.toggleLike(tr)
 	switch {
 	case a.profile == nil:
@@ -178,10 +183,77 @@ func (a *app) programLikesAnswered(uid int64, asked []int64, liked map[int64]boo
 	}
 }
 
+// sourceTrackKey names a song of a third-party source as the settings
+// keep it: where it plays from and what it is called, which is what tells
+// one such song from another whatever ID was made for it.
+func sourceTrackKey(tr *netease.Track) string {
+	return tr.PlayURL + "\x00" + tr.Name
+}
+
+// sourceLiked reports whether a song of a source is one the listener
+// liked. Nobody can like it through NetEase: it is not NetEase's song, so
+// the app keeps the list itself.
+func (a *app) sourceLiked(tr *netease.Track) bool {
+	key := sourceTrackKey(tr)
+	for _, k := range a.settings.LikedSources {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
+// likedHere reports whether the listener liked a song, wherever it is
+// kept: the account's list for NetEase's songs, and the app's own for the
+// songs of the sources.
+func (a *app) likedHere(tr *netease.Track) bool {
+	if tr.PlayURL != "" {
+		return a.sourceLiked(tr)
+	}
+	return a.isLiked(tr)
+}
+
+// toggleSourceLike likes a song of a source, or unlikes it, keeping the
+// list in the settings.
+func (a *app) toggleSourceLike(tr *netease.Track) {
+	key := sourceTrackKey(tr)
+	kept := a.settings.LikedSources
+	found := -1
+	for i, k := range kept {
+		if k == key {
+			found = i
+			break
+		}
+	}
+	if found >= 0 {
+		a.settings.LikedSources = append(append([]string(nil), kept[:found]...), kept[found+1:]...)
+		a.toast = "已取消喜欢"
+	} else {
+		a.settings.LikedSources = append(append([]string(nil), kept...), key)
+		a.toast = "已添加到喜欢"
+	}
+	a.settings.save()
+}
+
 // likeButton is a heart that likes tr: filled in red once liked. Liking
 // pops it in on a spring while a ring swells around it and confetti flies
 // out; unliking lets it give a little.
 func (a *app) likeButton(c *ui.Context, tr *netease.Track, size float32, color ui.Color) ui.Element {
+	if tr.PlayURL != "" {
+		// A song of a source is no song of NetEase's, so no account can
+		// like it: the app keeps the list itself, and the heart works all
+		// the same.
+		liked := a.sourceLiked(tr)
+		icon, label := iconHeart, "喜欢"
+		if liked {
+			icon, color, label = iconHeartFill, a.pal.accent, "取消喜欢"
+		}
+		b := iconButton(c, icon, size, color, label)
+		if b.Clicked() {
+			a.toggleSourceLike(tr)
+		}
+		return b
+	}
 	if tr.ProgramID != 0 {
 		a.askProgramLikes([]int64{tr.ProgramID})
 	}

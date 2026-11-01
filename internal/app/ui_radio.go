@@ -36,11 +36,15 @@ func radioLabel(name string) string {
 	return "私人 FM"
 }
 
-func playable(tracks []netease.Track) []netease.Track {
+// playableFor is what a radio plays from, as a listener who keeps
+// third-party sources hears it: a song NetEase will not serve is one of
+// them, when a source can find where it plays. A radio only has the song
+// to go by, so this is what decides whether it belongs in the queue.
+func (a *app) playableFor(tracks []netease.Track) []netease.Track {
 	var out []netease.Track
-	for _, t := range tracks {
-		if t.Playable() {
-			out = append(out, t)
+	for i := range tracks {
+		if a.canPlay(&tracks[i]) {
+			out = append(out, tracks[i])
 		}
 	}
 	return out
@@ -88,7 +92,7 @@ func (a *app) radioFeed(name string) func(got func([]netease.Track)) {
 				if err != nil {
 					break
 				}
-				tracks = playable(more)
+				tracks = a.playableFor(more)
 			}
 			a.post(func() { got(tracks) })
 		}()
@@ -175,7 +179,7 @@ func (a *app) startHeartMode() {
 				liked, _ = netease.PlaylistDetail(pid)
 			}
 			if liked != nil {
-				if ok := playable(liked.Tracks); len(ok) > 0 {
+				if ok := a.playableFor(liked.Tracks); len(ok) > 0 {
 					seed = &ok[rand.IntN(len(ok))]
 				}
 			}
@@ -194,7 +198,7 @@ func (a *app) startHeartMode() {
 				a.toast = "心动模式暂时无法开启，请稍后再试"
 				return
 			}
-			more = playable(more)
+			more = a.playableFor(more)
 			if fromPlaying && a.pl.Current() != nil && a.pl.Current().ID == seed.ID {
 				a.pl.RadioFrom(heartRadio, more, a.radioFeed(heartRadio))
 				return

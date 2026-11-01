@@ -322,6 +322,11 @@ func (a *app) removeFrom(pid int64, tr *netease.Track) {
 // listener's playlists, or take it out of pid, the one it is listed in, if
 // set.
 func (a *app) playlistItems(m *ui.Menu, tr *netease.Track, pid int64) {
+	if tr.PlayURL != "" {
+		// A third-party track is not in any playlist of NetEase's, and
+		// has no song ID one could be added by.
+		return
+	}
 	if a.profile == nil {
 		return
 	}

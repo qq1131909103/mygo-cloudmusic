@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/egoist/mygo"
+
+	"netease-music-mygo/internal/source"
 )
 
 // settings are the listener's choices, kept in settings.json in the user
@@ -34,6 +36,11 @@ type settings struct {
 	// LyricsStage shows lyrics on the stage, Folia's style, in Now
 	// Playing, rather than scrolling.
 	LyricsStage bool `json:"lyricsStage"`
+	// LyricsShiftMs moves the lyrics later, in milliseconds, for songs
+	// whose words are timed off what the listener hears: a live take
+	// carries the record's timings, and the two run apart. A listener
+	// adjusts it with the buttons beside the lyrics.
+	LyricsShiftMs int `json:"lyricsShiftMs,omitempty"`
 	// StageStyle is how the stage sets its lyrics (stageStyles): empty for
 	// Folia's classic, or the id of another of its visualizers.
 	StageStyle string `json:"stageStyle,omitempty"`
@@ -61,7 +68,25 @@ type settings struct {
 	// CacheMB is how many megabytes the songs kept on disk may take; 0
 	// keeps none.
 	CacheMB int `json:"cacheMB"`
+	// DownloadDir is where a song saved by the download button goes; empty
+	// means the Downloads folder.
+	DownloadDir string `json:"downloadDir,omitempty"`
+	// Sources are the third-party sources the app lists music from, in
+	// the order the settings keep them: folders on this machine,
+	// endpoints, and links. All of them list at once.
+	Sources []source.Entry `json:"sources,omitempty"`
+	// SourceKind, SourceFolder and SourceAPI are what settings written
+	// before the app kept a list of sources held. They are read once, as
+	// a list of one, and no longer written.
+	SourceKind   string `json:"sourceKind,omitempty"`
+	SourceFolder string `json:"sourceFolder,omitempty"`
+	SourceAPI    string `json:"sourceApi,omitempty"`
 	// SearchHistory keeps submitted keywords, most recent first.
+	// LikedSources keeps the songs of the third-party sources the listener
+	// liked, which no account of NetEase`s can hold: there is nobody to like
+	// them with, so the app keeps them itself. Each is named as its source
+	// names it, so that liking the same file twice says one song.
+	LikedSources  []string `json:"likedSources,omitempty"`
 	SearchHistory []string `json:"searchHistory,omitempty"`
 
 	path string // where they were loaded from, and are saved to
@@ -69,6 +94,37 @@ type settings struct {
 
 func defaultSettings() settings {
 	return settings{NotchActivity: true, Quality: "exhigh", Appearance: "system", Volume: 0.8, Normalize: true, AppIcon: "dock-and-menubar", CacheMB: 2048, Captions: true}
+}
+
+// sourceKind names the third-party source of kind, or off for one that is
+// none of them, as settings that name an unknown one are read.
+func sourceKind(kind string) string {
+	for _, k := range source.Kinds {
+		if k.Kind == kind {
+			return kind
+		}
+	}
+	return source.KindOff
+}
+
+// migrateSources reads sources the settings kept one of, before they kept
+// a list, as a list of one. It clears them either way: a list is what is
+// saved from now on.
+func (s *settings) migrateSources() {
+	if len(s.Sources) == 0 {
+		var value string
+		kind := sourceKind(s.SourceKind)
+		switch kind {
+		case source.KindFolder:
+			value = s.SourceFolder
+		case source.KindAPI:
+			value = s.SourceAPI
+		}
+		if value != "" {
+			s.Sources = []source.Entry{{ID: newSourceID(nil), Kind: kind, Value: value, Enabled: true}}
+		}
+	}
+	s.SourceKind, s.SourceFolder, s.SourceAPI = "", "", ""
 }
 
 func settingsPath() (string, error) {
@@ -125,6 +181,7 @@ func loadSettings() settings {
 		}
 		s.path = path
 	}
+	s.migrateSources()
 	return s
 }
 

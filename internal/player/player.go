@@ -2,15 +2,21 @@ package player
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/audio"
 
+	"netease-music-mygo/internal/ffmpeg"
 	"netease-music-mygo/internal/lyrics"
 	"netease-music-mygo/internal/netease"
+	"netease-music-mygo/internal/source"
 )
 
 type RepeatMode int
@@ -30,8 +36,24 @@ type Player struct {
 	// Normalize reports whether to even out the loudness of tracks, as
 	// the settings say.
 	Normalize func() bool
+	// Fallback, if set, finds where a song NetEase will not serve plays
+	// instead: given the song and the level asked for, it answers with an
+	// address, and a track streaming from there is played in its place.
+	// This is where a song that needs a membership, or one NetEase has
+	// lost, comes back: the third-party sources the listener keeps are
+	// asked for it, and what they answer is played under the name, the
+	// singer and the cover NetEase gave it.
+	Fallback func(t netease.Track, level string) (source.Answer, error)
 	// Cache keeps the songs played, if set.
 	Cache *Cache
+	// LocalMeta, if set, finds the cover and the lyrics of a file of this
+	// machine that has neither beside it, by the song it is: both are
+	// empty when the file is not one the account knows.
+	LocalMeta func(t *netease.Track) (cover []byte, lrc string)
+	// LyricsShift returns how far the lyrics are moved later, in
+	// milliseconds, as the listener adjusted them: it is asked as a
+	// song loads, and again when the adjustment changes.
+	LyricsShift func() time.Duration
 	// Changed, if set, hears that what plays, where it is or whether it
 	// plays changed.
 	Changed func()
@@ -63,6 +85,7 @@ type Player struct {
 	gen     int // counts loads, to drop the results of stale ones
 
 	lyrics       []lyrics.Line
+	lyricBase    []lyrics.Line // as loaded, before the listener's shift
 	lyricsLoaded bool
 
 	// pending holds a seek asked for while the track loads.
@@ -341,6 +364,16 @@ func (p *Player) Repeat() RepeatMode { return p.repeat }
 // Lyrics returns the current track's lyrics, and whether they have loaded.
 func (p *Player) Lyrics() ([]lyrics.Line, bool) { return p.lyrics, p.lyricsLoaded }
 
+// ShiftLyrics moves the current track's lyrics by what LyricsShift now
+// says, without loading them again: the buttons beside the lyrics ask for
+// this as they are pressed, so that the words move as they are set.
+func (p *Player) ShiftLyrics() {
+	if p.LyricsShift == nil || len(p.lyricBase) == 0 {
+		return
+	}
+	p.lyrics = lyrics.Shift(p.lyricBase, p.LyricsShift())
+}
+
 // Downloaded returns the share of the current track downloaded so far, or
 // false before it has started to.
 func (p *Player) Downloaded() (float64, bool) {
@@ -591,7 +624,7 @@ func (p *Player) loadSkipping(at, skipped int, play bool, from time.Duration) {
 	p.refill()
 
 	go func() {
-		cover, err := netease.Fetch(netease.Sized(t.Album.PicURL, 600))
+		cover, err := coverOf(&t, p.LocalMeta)
 		if err == nil {
 			p.post(func() {
 				if gen == p.gen {
@@ -602,14 +635,18 @@ func (p *Player) loadSkipping(at, skipped int, play bool, from time.Duration) {
 	}()
 
 	go func() {
-		lrc, trans, yrc, err := netease.Lyrics(t.ID)
+		lrc, trans, yrc, err := lyricsOf(&t, p.LocalMeta)
 		var lines []lyrics.Line
 		if err == nil {
 			lines = lyrics.Build(lrc, trans, yrc)
+			if p.LyricsShift != nil {
+				lines = lyrics.Shift(lines, p.LyricsShift())
+			}
 		}
 		p.post(func() {
 			if gen == p.gen {
 				p.lyrics = lines
+				p.lyricBase = lines
 				p.lyricsLoaded = true
 			}
 		})
@@ -683,14 +720,9 @@ func (p *Player) loadSkipping(at, skipped int, play bool, from time.Duration) {
 // open opens track t's audio at level: kept in the cache, or else
 // streamed into it, and kept once it has all come in.
 func (p *Player) open(t netease.Track, level string) (*netease.Stream, stream, error) {
-	dl, info, ok := p.Cache.lookup(t.ID, level)
-	if !ok {
-		var err error
-		info, err = netease.SongURL(t.ID, level)
-		if err != nil {
-			return nil, nil, err
-		}
-		dl = p.Cache.download(t.ID, info)
+	info, dl, err := p.audio(t, level)
+	if err != nil {
+		return nil, nil, err
 	}
 	s, err := openStream(dl, t.Duration)
 	if err != nil {
@@ -698,6 +730,179 @@ func (p *Player) open(t netease.Track, level string) (*netease.Stream, stream, e
 		return nil, nil, err
 	}
 	return info, s, nil
+}
+
+// audio opens where t's audio comes from, and what it says about it: a
+// track that names its own PlayURL streams from there, needing no account
+// and no library; any other is the account's, fetched at level.
+func (p *Player) audio(t netease.Track, level string) (*netease.Stream, *download, error) {
+	if t.PlayURL != "" {
+		return ownSource(t, "", "")
+	}
+	dl, info, ok := p.Cache.lookup(t.ID, level)
+	if !ok {
+		info, err := netease.SongURL(t.ID, level)
+		if err != nil {
+			// NetEase will not serve this one: a song of the account's
+			// that asks for a membership, a preview, or one it no longer
+			// has. The listener's own sources are asked where else it
+			// plays, and what one answers is played instead.
+			if found, missed := p.fallback(t, level); missed == nil {
+				return ownSource(netease.Track{PlayURL: found.URL}, found.Source, found.Level)
+			} else if !errors.Is(missed, errNoFallback) {
+				return nil, nil, fmt.Errorf("%w；第三方音源也没找到：%s", err, missed)
+			}
+			return nil, nil, err
+		}
+		dl = p.Cache.download(t.ID, info)
+	}
+	return info, dl, nil
+}
+
+// errNoFallback says that nothing was asked to stand in for a song, as
+// no source is kept that could.
+var errNoFallback = errors.New("没有可以替它取流的音源")
+
+// fallback asks the sources the listener keeps where a song NetEase will
+// not serve plays instead.
+func (p *Player) fallback(t netease.Track, level string) (source.Answer, error) {
+	if p.Fallback == nil {
+		return source.Answer{}, errNoFallback
+	}
+	found, err := p.Fallback(t, level)
+	if err != nil {
+		return source.Answer{}, err
+	}
+	if strings.TrimSpace(found.URL) == "" {
+		return source.Answer{}, errNoFallback
+	}
+	return found, nil
+}
+
+// sourceLevel is the level a track that brings its own audio streams at:
+// no quality of the account's names it, and the cache keeps no song by
+// it, so what it plays from is read where it is, and never written again.
+const sourceLevel = "source"
+
+// ownSource opens the audio of the track t, which names it itself: a file
+// on this machine, read in place, or an address to stream from. Neither
+// asks NetEase for anything, and neither is kept in the cache. from and
+// level say which source answered for it, and what it was asked for, when
+// a source did rather than the track itself.
+func ownSource(t netease.Track, from, level string) (*netease.Stream, *download, error) {
+	info := &netease.Stream{URL: t.PlayURL, Type: streamExt(t.PlayURL), Source: from}
+	// A track of the listener's own, or a source that found one: what it
+	// was asked for is the level to show, and a level NetEase does not name
+	// shows as what it is. A track of no source's streams at no level.
+	switch {
+	case from != "" && level != "" && level != source.LevelBest:
+		info.Level = level
+	default:
+		info.Level = sourceLevel
+	}
+	path, local := source.LocalPath(t.PlayURL)
+	if !local {
+		// As much of it as arrives is played as it arrives; its length is
+		// not promised, so seeking waits for all of it.
+		return info, startDownload(t.PlayURL, 0, nil, nil), nil
+
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+
+	}
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+
+	}
+	if info.Type == "" {
+		info.Type = streamExt(path)
+
+	}
+	info.Size = st.Size()
+	if ffmpeg.Handled(path) {
+		// A format the app has no decoder for: ffmpeg reads the file
+		// where it is, so its bytes are not fetched.
+		f.Close()
+		return info, openedPath(path, st.Size()), nil
+	}
+	return info, opened(f, st.Size()), nil
+}
+
+// streamExt names what a stream holds, as its address says: the format
+// the file is in, or "" when its name and its query say none the app
+// knows.
+func streamExt(u string) string {
+	if i := strings.IndexAny(u, "?#"); i >= 0 {
+		u = u[:i]
+	}
+	switch strings.ToLower(filepath.Ext(u)) {
+	case ".mp3":
+		return "mp3"
+	case ".flac":
+		return "flac"
+	case ".ogg", ".oga":
+		return "ogg"
+	case ".wav":
+		return "wav"
+	case ".wma":
+		return "wma"
+	case ".m4a":
+		return "m4a"
+	case ".aac":
+		return "aac"
+	case ".opus":
+		return "opus"
+	case ".ape":
+		return "ape"
+	case ".aiff", ".aif":
+		return "aiff"
+	case ".alac":
+		return "alac"
+	}
+	return ""
+}
+
+// coverOf returns the cover art of t: a third-party track's from where it
+// names it — its file's tags, or a picture beside it — and the account's
+// from its own CDN. meta is what a file of this machine that carries no
+// cover is looked up by, if the player has one.
+func coverOf(t *netease.Track, meta func(*netease.Track) ([]byte, string)) ([]byte, error) {
+	if t.PlayURL != "" {
+		if b, err := source.Bytes(t.Album.PicURL); err == nil && len(b) > 0 {
+			return b, nil
+		}
+		// A file of this machine that carries no cover, and has none
+		// beside it: the song it is has one, which meta fetches it.
+		if meta != nil {
+			if b, _ := meta(t); len(b) > 0 {
+				return b, nil
+			}
+		}
+		return nil, errors.New("player: no cover")
+	}
+	return netease.Fetch(netease.Sized(t.Album.PicURL, 600))
+}
+
+// lyricsOf returns the lyrics of t, and whether they say their timings:
+// a third-party track has the .lrc file beside it, if any, and no
+// translation, which only the account serves.
+func lyricsOf(t *netease.Track, meta func(*netease.Track) ([]byte, string)) (lrc, trans, yrc string, err error) {
+	if t.PlayURL != "" {
+		lrc, err = source.Lyrics(t)
+		if strings.TrimSpace(lrc) == "" && meta != nil {
+			// Nothing beside the file: the song it is on NetEase has its
+			// lyrics, which is what meta fetches.
+			if _, found := meta(t); strings.TrimSpace(found) != "" {
+				return found, "", "", nil
+			}
+		}
+		return lrc, "", "", err
+	}
+	return netease.Lyrics(t.ID)
 }
 
 // Session is where playback was left, to pick up again.

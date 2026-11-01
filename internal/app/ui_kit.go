@@ -142,11 +142,11 @@ func (a *app) cover(c *ui.Context, url string, px int, size, radius float32) ui.
 	bmp := bitmap(a.art.get(netease.Sized(url, px), false))
 	in := artIn(box, bmp)
 	if in < 1 {
-		box.Background(p.hover)
+		box.Background(p.hairline)
 	}
 	box.Children(func() {
 		if in < 1 {
-			ui.Icon(c, iconNote).Size(size*0.3, size*0.3).TextColor(p.faint).Opacity(1 - in)
+			ui.Icon(c, iconNote).Size(size*0.3, size*0.3).TextColor(p.muted).Opacity(1 - in)
 		}
 		artImage(c, bmp, radius, in)
 	})

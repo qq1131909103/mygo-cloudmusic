@@ -2,6 +2,7 @@ package app
 
 import (
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -9,9 +10,65 @@ import (
 
 	"netease-music-mygo/internal/netease"
 	"netease-music-mygo/internal/player"
+	"netease-music-mygo/internal/source"
 )
 
 type pageKind int
+
+// fallbackSet is the sources the player falls back on, kept where both
+// the settings, which change them, and the player, which asks from its
+// own thread, reach them safely. Held by pointer: the app is copied in
+// tests, and a lock inside it may not be.
+type fallbackSet struct {
+	mu      sync.Mutex
+	entries []source.Entry
+}
+
+// list is the sources as they are now.
+func (f *fallbackSet) list() []source.Entry {
+	if f == nil {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.entries
+}
+
+// keep is the sources as they are now.
+func (f *fallbackSet) keep(entries []source.Entry) {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.entries = append([]source.Entry(nil), entries...)
+}
+
+// hasAnswers says whether the listener keeps anything to fall back on:
+// without it a song NetEase will not serve is a song there is no point
+// offering, and with it every song they can name plays.
+func (f *fallbackSet) hasAnswers() bool {
+	return source.AnswersSongs(f.list())
+}
+
+// canPlay says whether the track at tr can be played: NetEase plays it,
+// or a source the listener keeps can find where it plays instead. Without
+// such a source this is what it always was, so that a listener who keeps
+// none sees the songs NetEase will not serve the way they always did.
+func (a *app) canPlay(tr *netease.Track) bool {
+	if path, local := source.LocalPath(tr.PlayURL); local {
+		// A file of this machine plays if the app decodes its format: the
+		// ones it does not — the rest of a library, which a folder lists
+		// all the same — are seen and left alone.
+		return source.Decodable(path)
+	}
+	if tr.Playable() {
+		return true
+	}
+	// What is left is a song NetEase withholds — one that asks for a
+	// membership, or a preview. Those are the ones a source answers for.
+	return a.fallbackSources.hasAnswers()
+}
 
 const (
 	pageHome pageKind = iota
@@ -25,6 +82,11 @@ const (
 	pageUser
 	pagePodcast
 	pagePodcasts
+	pageSource
+	// pageLocal is the music on this machine, which is a page of its own
+	// rather than a source among the others: it is where a listener goes
+	// to add a folder of their own music, and to hear it.
+	pageLocal
 )
 
 type route struct {
@@ -74,6 +136,47 @@ type app struct {
 	homeErr     string
 	homeLoading bool
 	homeAt      time.Time // when what the home page shows was asked for
+
+	// What the third-party sources hold, the ones the settings keep: see
+	// ui_source.go.
+	sourceTracks  []netease.Track
+	sourceFailed  []string // the sources that could not be listed, and why
+	sourceLoading bool
+	sourceErr     string
+	sourceFor     string // the settings the tracks were listed for
+	sourceGen     int    // counts lists, to drop what a stale one gives
+	// What the folders of this machine hold, listed apart from the other
+	// sources: a folder is read in milliseconds, while an endpoint may take
+	// seconds, and the page of this machine's music should not wait for it.
+	localSongs   []netease.Track
+	localFailed  []string
+	localFor     string
+	localGen     int
+	localLoading bool
+	// What the sources" page is showing of their songs: the words searched
+	// for, and how they are sorted: see ui_source_lib.go.
+	sourceView sourceView
+	// localSearch is what the page of this machine`s music filters by: see
+	// ui_local.go.
+	localSearch string
+	// sidecarBusy says a fetch of the covers and lyrics of this machine`s
+	// music is running: see ui_local.go.
+	sidecarBusy bool
+	// What the settings' own test of a source found, by the entry it
+	// tested, and the ones a test is running for: see ui_source.go.
+	sourceTests map[string]string
+	sourceBusy  map[string]bool
+	// What the player is given to fall back on when NetEase will not
+	// serve a song: the sources the settings keep, copied here because
+	// the player asks from its own thread while the settings are edited
+	// on this one. Held by pointer: the app is copied in tests, and a
+	// lock inside it may not be.
+	fallbackSources *fallbackSet
+
+	// What is being saved to the Downloads folder, and what the last one
+	// did: see ui_download.go. Held by pointer, as the fallback sources
+	// are: the app is copied in tests, and a lock inside it may not be.
+	downloads *downloadState
 
 	playlists  map[int64]*netease.Playlist
 	loadingPl  map[int64]bool
@@ -211,11 +314,35 @@ func Run() error {
 		a.pl = player.New(a.post)
 		a.pl.Quality = func() string { return a.settings.Quality }
 		a.pl.Normalize = func() bool { return a.settings.Normalize }
+		// A song NetEase will not serve is a song the listener's own
+		// sources are asked for: a Luoxue script kept on this machine,
+		// or an address that takes the words to search for. What the
+		// settings keep is copied, as the player asks from its own
+		// thread while the settings are edited on this one.
+		// What the download button saves, and where: the one list beside the
+		// player's, since both run on this thread. See ui_download.go.
+		a.downloads = &downloadState{}
+
+		a.fallbackSources = &fallbackSet{}
+		a.fallbackSources.keep(a.settings.Sources)
+		a.pl.Fallback = func(t netease.Track, level string) (source.Answer, error) {
+			return source.Fallback(a.fallbackSources.list(), t, level)
+		}
 		a.pl.Cache = newSongCache(a.settings.CacheMB)
 		a.pl.Changed = func() {
 			a.keepSession()
 			a.syncCaptions()
 		}
+		// A file of this machine that came with no cover and no lyrics has
+		// the song it is looked up for them: the app is what asks NetEase,
+		// and the player is what finds the file playing without them.
+		a.pl.LocalMeta = a.localMeta
+		// How far the lyrics are moved later, as the listener set it,
+		// asked again whenever the buttons beside them are pressed.
+		a.wireShift()
+		// Covers fetched for files of this machine are kept where a scan
+		// reads them back, so that a restart shows them again.
+		source.SetCoverCache(coverDirName())
 		a.volume = a.settings.Volume
 		a.pl.SetVolume(a.volume)
 		a.win = mygo.NewWindow(mygo.WindowOptions{

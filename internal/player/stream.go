@@ -13,8 +13,10 @@ import (
 	"sync"
 
 	"github.com/egoist/mygo/audio"
+	_ "github.com/egoist/mygo/audio/vorbis" // registers Ogg Vorbis with package audio
 	gomp3 "github.com/hajimehoshi/go-mp3"
 
+	"netease-music-mygo/internal/ffmpeg"
 	"netease-music-mygo/internal/netease"
 )
 
@@ -34,6 +36,10 @@ type download struct {
 	done   bool
 	err    error
 	cancel context.CancelFunc
+	// path is where a song of this machine is, and local says one is:
+	// what ffmpeg decodes is a file, which the app reads where it lies.
+	path  string
+	local bool
 	// part is the file's path until the cache keeps it, which keep does
 	// once the song has all come in: the path it is at then.
 	part string
@@ -79,6 +85,15 @@ func downloaded(b []byte) *download {
 // size bytes, as a song from the cache.
 func opened(f *os.File, size int64) *download {
 	d := &download{file: f, n: size, size: size, done: true, cancel: func() {}, users: 1}
+	d.cond.L = &d.mu
+	return d
+}
+
+// openedPath returns a download standing for the file at path, which is
+// read where it lies: what ffmpeg decodes is that file, not its bytes.
+func openedPath(path string, size int64) *download {
+	d := &download{n: size, size: size, done: true, cancel: func() {}, users: 1}
+	d.path, d.local = path, true
 	d.cond.L = &d.mu
 	return d
 }
@@ -324,12 +339,31 @@ type stream interface {
 	source() (*download, *spectrum)
 }
 
-// openStream opens the song dl fetches, MP3 or FLAC, as its first bytes
-// say. An MP3 says nothing of its length: durationMs is it.
+// openStream opens the song dl fetches, as its first bytes say: MP3, FLAC,
+// Ogg Vorbis or WAV, and for a file of a format none of those read, one
+// ffmpeg decodes. An MP3 says nothing of its length: durationMs is it.
 func openStream(dl *download, durationMs int64) (stream, error) {
+	// A file of this machine of a format the app has no decoder for is
+	// handed to ffmpeg before its bytes are read: it is read where it
+	// lies, and none of it is fetched.
+	if dl.local && ffmpeg.Handled(dl.path) {
+		return openExternal(dl.path, durationMs)
+	}
 	off := id3Size(dl)
-	if dl.waitFor(off+4) >= off+4 && string(dl.peek(off, 4)) == "fLaC" {
-		return openFLACStream(dl)
+	if dl.waitFor(off+4) >= off+4 {
+		switch magic := string(dl.peek(off, 4)); {
+		case magic == "fLaC":
+			return openFLACStream(dl)
+		case magic == "OggS":
+			return openDecoderStream(dl)
+		case magic == "RIFF":
+			// A WAV says so after the size: RIFF????WAVE.
+			if dl.waitFor(off+12) >= off+12 && string(dl.peek(off+8, 4)) == "WAVE" {
+				return openDecoderStream(dl)
+			}
+		case magic[:3] == "ID3" || (magic[0] == 0xff && magic[1]&0xe0 == 0xe0):
+			return openMP3Stream(dl, durationMs)
+		}
 	}
 	return openMP3Stream(dl, durationMs)
 }
@@ -350,6 +384,8 @@ func openShared(dl *download, durationMs int64) (stream, error) {
 	case *mp3Stream:
 		s.spec, s.drop = nil, dl.release
 	case *flacStream:
+		s.spec, s.drop = nil, dl.release
+	case *decoderStream:
 		s.spec, s.drop = nil, dl.release
 	}
 	return s, nil

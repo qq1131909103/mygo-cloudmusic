@@ -6,6 +6,8 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+
+	"netease-music-mygo/internal/source"
 )
 
 // openSettings shows the settings window, opening it the first time.
@@ -46,6 +48,12 @@ func (a *app) changed() {
 	if a.notch != nil {
 		a.notch.setEnabled(a.settings.Notch)
 	}
+	// A source the settings no longer name, or name afresh, is listed
+	// again when this changed it.
+	a.reloadSource()
+	// And the player is told them as they are now, for the songs NetEase
+	// will not serve.
+	a.fallbackSources.keep(a.settings.Sources)
 	a.redraw()
 }
 
@@ -66,6 +74,21 @@ func (a *app) settingsView(c *ui.Context) {
 		row := func(label, desc string, control func()) {
 			ui.Row(c).Padding(12, 16).Gap(16).AlignItems(ui.Center).MinHeight(48).Children(func() {
 				ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(3).Children(func() {
+					ui.Text(c, label).FontSize(13.5).FontWeight(500)
+					if desc != "" {
+						ui.Text(c, desc).FontSize(12).TextColor(p.muted).LineHeight(1.4)
+					}
+				})
+				control()
+			})
+		}
+		// stacked puts what a row names above its controls, across the
+		// whole width, rather than beside them: the rows that hold
+		// several controls at once have none to spare, and an address
+		// squeezed into the side of a label cannot be read as it is typed.
+		stacked := func(label, desc string, control func()) {
+			ui.Column(c).Padding(12, 16).Gap(8).Children(func() {
+				ui.Column(c).Gap(3).Children(func() {
 					ui.Text(c, label).FontSize(13.5).FontWeight(500)
 					if desc != "" {
 						ui.Text(c, desc).FontSize(12).TextColor(p.muted).LineHeight(1.4)
@@ -157,6 +180,103 @@ func (a *app) settingsView(c *ui.Context) {
 		if a.captionsShown() {
 			group("播客", func() { a.captionSettings(row, c) })
 		}
+
+		group("第三方音源", func() {
+			// What the page of this machine's music is for, and where it
+			// is: a folder of files is added there, beside the music it
+			// holds, rather than here.
+			row("本地音乐", "这台电脑上的音乐，在侧边栏的「本地音乐」里添加与收听", func() {
+				if ui.Button(c.Key("source-local-page"), "打开").Clicked() {
+					a.open(route{page: pageLocal})
+				}
+			})
+			row("音源", sourceWhy, func() {
+				if ui.Button(c.Key("source-add"), "添加").Clicked() {
+					a.addSource()
+				}
+			})
+			// What the sources are for, and how they are filled in: a
+			// listener who knows no interface still gets music, and one
+			// whose song NetEase will not serve knows what to add.
+			row("地址怎么填", sourceAddressHelp, func() {})
+			// The row that asks to remove a source is applied once every
+			// row is drawn: the list it is drawn from is not cut while it
+			// is read.
+			remove := -1
+			for i := range s.Sources {
+				e := &s.Sources[i]
+				row(e.Title(), sourceNote(*e), func() {
+					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+						if ui.Switch(c.Key("source-on-"+e.ID), &e.Enabled).Label("启用").Changed() {
+							a.changed()
+						}
+						if iconButton(c.Key("source-del-"+e.ID), iconTrash, 15, p.muted, "删除").Clicked() {
+							remove = i
+						}
+					})
+				})
+				stacked("类型与地址", a.sourceTestNote(*e), func() {
+					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+						labels := make([]string, len(source.Kinds))
+						chosen := source.Kinds[0].Label
+						for j, k := range source.Kinds {
+							labels[j] = k.Label
+							if k.Kind == e.Kind {
+								chosen = k.Label
+							}
+						}
+						if ui.Select(c.Key("source-kind-"+e.ID), &chosen, labels).Label("类型").Width(104).Changed() {
+							for _, k := range source.Kinds {
+								if k.Label == chosen {
+									e.Kind = k.Kind
+								}
+							}
+							a.changed()
+						}
+						// What is filled in is the address whatever the
+						// kind: a path is read as it is typed, so that a
+						// source's address is edited in this one place.
+						// Choosing one is not: a folder of this machine's
+						// music, and a source script, are added on their
+						// own pages, where the songs are seen.
+						in := ui.TextInput(c.Key("source-value-"+e.ID), &e.Value).Label("地址").
+							Placeholder(sourcePlaceholder(e.Kind)).Grow(1).Basis(0).MinWidth(96)
+						// Saved as it is typed; the page lists the new
+						// address when it is opened or refreshed.
+						if in.Changed() {
+							a.settings.save()
+						}
+						// The test says, before anything is played from
+						// it, whether the address lists anything.
+						if ui.Button(c.Key("source-test-"+e.ID), "测试").Disabled(a.sourceBusy[e.ID]).Clicked() {
+							a.testSource(i)
+						}
+					})
+				})
+			}
+			if remove >= 0 {
+				a.removeSource(remove)
+			}
+		})
+
+		group("下载", func() {
+			// Where the button beside what plays saves the song: the Downloads
+			// folder unless the listener picks another, so that the button can be
+			// pressed without being asked where it goes. The path is a line of
+			// its own, so that a long one reads whole.
+			stacked("下载文件夹", "正在播放旁的下载按钮把歌存在这里", func() {
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, a.downloadDirPath()).FontSize(12.5).TextColor(p.muted).SingleLine().Grow(1).Basis(0).MinWidth(0)
+					if ui.Button(c.Key("download-pick"), "选择…").Clicked() {
+						a.chooseDownloadDir()
+					}
+					if s.DownloadDir != "" && ui.Button(c.Key("download-reset"), "用默认").Clicked() {
+						s.DownloadDir = ""
+						a.changed()
+					}
+				})
+			})
+		})
 
 		group("缓存", func() {
 			row("歌曲缓存", "听过的歌曲保存在本机，再次播放无需等待，也不耗流量；"+a.cacheUsage(), func() {

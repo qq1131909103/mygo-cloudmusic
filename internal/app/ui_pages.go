@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 
 	"netease-music-mygo/internal/netease"
 	"netease-music-mygo/internal/player"
+	"netease-music-mygo/internal/source"
 )
 
 const pagePad = 40
@@ -282,13 +284,13 @@ func (a *app) playlistHeader(c *ui.Context, pl *netease.Playlist) {
 					if a.pl.Shuffle() {
 						a.pl.ToggleShuffle()
 					}
-					a.pl.PlayQueue(pl.Tracks, firstPlayable(pl.Tracks))
+					a.pl.PlayQueue(pl.Tracks, a.firstPlayableFor(pl.Tracks))
 				}
 				if pillButton(c.Key("shuffle"), iconShuffle, "随机播放", p.hover.Over(p.bg), p.text).Clicked() {
 					if !a.pl.Shuffle() {
 						a.pl.ToggleShuffle()
 					}
-					a.pl.PlayQueue(pl.Tracks, firstPlayable(pl.Tracks))
+					a.pl.PlayQueue(pl.Tracks, a.firstPlayableFor(pl.Tracks))
 				}
 				if a.savable(pl) {
 					icon, label := iconPlus, "收藏"
@@ -367,6 +369,9 @@ func (a *app) trackRows(c *ui.Context, tracks []netease.Track, covers bool, head
 		i--
 		tr := &tracks[i]
 		playing := cur != nil && cur.ID == tr.ID
+		// A song NetEase will not serve still plays when a source the
+		// listener keeps can find where it plays instead.
+		canPlay := a.canPlay(tr)
 		row := ui.ButtonBase(c.Key(tr.ID)).Height(54).PaddingX(12).Gap(14).Radius(10).AlignItems(ui.Center).FocusRing(false).Label(tr.Name).
 			ContextMenu(a.songItems(tr, pid))
 		hovered := row.Hovered()
@@ -378,7 +383,7 @@ func (a *app) trackRows(c *ui.Context, tracks []netease.Track, covers bool, head
 			bg = p.hover
 		}
 		row.Background(row.AnimateColor("bg", bg, ui.Animation{Duration: 100 * time.Millisecond}))
-		if !tr.Playable() {
+		if !canPlay {
 			row.Opacity(0.42)
 		}
 		row.Children(func() {
@@ -386,7 +391,7 @@ func (a *app) trackRows(c *ui.Context, tracks []netease.Track, covers bool, head
 				switch {
 				case playing:
 					a.nowPlayingBars(c)
-				case hovered && tr.Playable():
+				case hovered && canPlay:
 					ui.Icon(c, iconPlay).Size(13, 13).TextColor(p.text)
 				default:
 					ui.Textf(c, "%d", i+1).FontSize(13).FontFeatures("tnum").TextColor(p.faint)
@@ -405,13 +410,24 @@ func (a *app) trackRows(c *ui.Context, tracks []netease.Track, covers bool, head
 					spans = append(spans, ui.Span{Text: "（" + tr.Alias[0] + "）", Color: p.faint})
 				}
 				ui.RichText(c, spans...).FontSize(14).SingleLine()
-				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-					if !tr.Playable() {
-						ui.Text(c, "VIP").FontSize(9).FontWeight(800).TextColor(p.accent).Padding(0, 4).Radius(3).Border(1, p.accent.Alpha(0.6))
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+					// The mark names what the song is, whether or not a
+					// source stands in for it: a song NetEase charges
+					// for, one it has withdrawn, and one there is
+					// nothing to play from at all. A listener who keeps
+					// a source can play the paid ones, and still wants
+					// to know which they are.
+					if mark, color := trackMark(tr, canPlay, p); mark != "" {
+						ui.Text(c, mark).FontSize(9).FontWeight(800).TextColor(color).Padding(0, 4).Radius(3).Border(1, color.Alpha(0.35))
 					}
 					a.artistLinks(c, tr, p.muted, p.text).FontSize(12.5).SingleLine().Shrink(1).MinWidth(0)
 					if tr.Reason != "" {
 						ui.Text(c, tr.Reason).FontSize(10.5).FontWeight(600).TextColor(p.accent).Padding(1, 6).Radius(999).Background(p.accent.Alpha(0.1)).SingleLine()
+					}
+					// A track of a third-party source says which one it
+					// came from, as several of them list at once.
+					if tr.Source != "" {
+						ui.Text(c, tr.Source).FontSize(10.5).FontWeight(600).TextColor(p.muted).Padding(1, 6).Radius(999).Border(1, p.hairline).SingleLine()
 					}
 				})
 			})
@@ -427,16 +443,93 @@ func (a *app) trackRows(c *ui.Context, tracks []netease.Track, covers bool, head
 			}
 			// A liked song's heart shows; the others' as the pointer is on them.
 			ui.Box(c).Size(32, 32).Center().Children(func() {
-				if a.liked[tr.ID] || hovered {
+				if a.likedHere(tr) || hovered {
 					a.likeButton(c.Key("like"), tr, 15, p.muted)
 				}
 			})
-			ui.Text(c, clock(tr.Length())).FontSize(12.5).FontFeatures("tnum").TextColor(p.faint).Width(44).TextAlign(ui.End)
+			// The download button stands where the heart does, and shows as
+			// it does: the row stays quiet until the pointer is on it. It
+			// saves the song at the best a source can give, as the button
+			// beside what plays does.
+			ui.Box(c).Size(32, 32).Center().Children(func() {
+				if a.savingSays(tr) || hovered {
+					a.rowDownloadButton(c, tr, 15, p.muted)
+				}
+			})
+			ui.Text(c, clockOrDash(tr.Length())).FontSize(12.5).FontFeatures("tnum").TextColor(p.faint).Width(44).TextAlign(ui.End)
 		})
-		if row.Clicked() && tr.Playable() {
+		if row.Clicked() && canPlay {
 			a.pl.PlayQueue(tracks, i)
+		} else if row.Clicked() {
+			// A row that cannot play says why, rather than doing nothing:
+			// a file of a format the app does not decode was listed to be
+			// seen, and a press on it should not read as a broken one.
+			if mark, ok := notPlayableNote(tr); ok {
+				a.toast = mark
+				a.redraw()
+			}
 		}
 	}).Grow(1).Padding(top+pageGap, pagePad-12, bottom+32, pagePad-12).ScrollbarInsets(top, 0, bottom, 0)
+}
+
+// clockOrDash is how long a song plays, or a dash for one whose length the
+// app cannot read: the formats it only lists say nothing of theirs.
+func clockOrDash(d time.Duration) string {
+	// Under a second is no length a song has: it is a file whose length the
+	// reader did not find, and 0:00 would say it is empty.
+	if d < time.Second {
+		return "—"
+	}
+	return clock(d)
+}
+
+// notPlayableNote says, for a row that cannot play, what to tell the
+// listener: a file of this machine in a format the app does not decode is
+// told apart from a song NetEase will not serve.
+func notPlayableNote(tr *netease.Track) (string, bool) {
+	if path, local := source.LocalPath(tr.PlayURL); local && !source.Decodable(path) {
+		ext := strings.ToUpper(strings.TrimPrefix(filepath.Ext(path), "."))
+		return "这个格式还不能播放（" + ext + "），先用别的播放器听", true
+	}
+	if tr.TakenDown() {
+		return "这首歌已下架", true
+	}
+	return "", false
+}
+
+// trackMark is the mark a row shows beside a song, and its color: "VIP"
+// for one NetEase charges for, "已下架" for one it has withdrawn, and
+// "不可播" for one there is nothing to play from — a paid song with no
+// source kept to stand in for it.
+//
+// The paid mark shows whether or not a source stands in for the song:
+// what is being paid for is worth telling apart from what is free,
+// even once it plays.
+func trackMark(tr *netease.Track, canPlay bool, p palette) (mark string, color ui.Color) {
+	switch {
+	case localUnplayable(tr):
+		// A file of this machine in a format the app does not decode: it is
+		// listed to be seen, and says so rather than looking like a song
+		// NetEase withheld.
+		return "不支持播放", p.faint
+	case tr.TakenDown():
+		return "已下架", p.faint
+	case tr.Paid():
+		// A paid song that plays through a source is the same song:
+		// the mark is the same, whether the source is what makes it
+		// play or not.
+		return "VIP", p.accent
+	case canPlay:
+		return "", p.muted
+	}
+	return "不可播", p.faint
+}
+
+// localUnplayable says whether a track is a file of this machine in a
+// format the app does not decode.
+func localUnplayable(tr *netease.Track) bool {
+	path, local := source.LocalPath(tr.PlayURL)
+	return local && !source.Decodable(path)
 }
 
 // nowPlayingBars dance in the row of the track playing.

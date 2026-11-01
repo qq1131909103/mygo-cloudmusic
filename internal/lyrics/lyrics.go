@@ -215,6 +215,33 @@ func Index(lines []Line, pos time.Duration) int {
 	return i - 1
 }
 
+// Shift moves every line of lines by d, and the words with them: what a
+// listener hears when the words shown come early or late, the lyrics of a
+// live take being timed to the record rather than to the performance.
+// A positive d shows the words later, which is what advancing a song's
+// lyrics by hand means.
+func Shift(lines []Line, d time.Duration) []Line {
+	if d == 0 || len(lines) == 0 {
+		return lines
+	}
+	out := make([]Line, len(lines))
+	for i, l := range lines {
+		l.At += d
+		l.End += d
+		if len(l.Words) > 0 {
+			words := make([]Word, len(l.Words))
+			for k, w := range l.Words {
+				w.Start += d
+				w.End += d
+				words[k] = w
+			}
+			l.Words = words
+		}
+		out[i] = l
+	}
+	return out
+}
+
 // A Quiet is a stretch of a song with nothing sung: its intro, an
 // interlude, or its outro.
 type Quiet struct {

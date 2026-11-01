@@ -41,6 +41,12 @@ func (a *app) commentsFor(tr *netease.Track) *commentState {
 	cs := &a.comments
 	if cs.track != tr.ID {
 		*cs = commentState{track: tr.ID, thread: tr.Thread()}
+		if tr.PlayURL != "" {
+			// A third-party track is not NetEase's: nothing has comments
+			// on it, and none are asked for.
+			cs.err = "第三方音源没有评论"
+			return cs
+		}
 		a.loadComments()
 	}
 	return cs

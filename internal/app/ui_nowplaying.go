@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"math"
 	"time"
 
@@ -97,6 +98,9 @@ func (a *app) nowPlayingView(c *ui.Context) {
 		// Over the backdrop, which is positioned too: positioned elements
 		// paint over those in the flow.
 		ui.Column(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).Children(func() { a.nowPlayingBody(c, tr, art, accent, w, h, pointerIn) })
+		// Last of all, so that they are over the body, which covers the
+		// whole window: an arrow under it takes no press.
+		a.lyricsShiftArrows(c)
 	})
 }
 
@@ -172,10 +176,14 @@ func (a *app) nowPlayingBody(c *ui.Context, tr *netease.Track, art *artwork, acc
 						if r := pl.Radio(); r != "" {
 							a.radioChip(c, r)
 						}
-						ui.Text(c, tr.Name).FontSize(22).FontWeight(700).LetterSpacing(-0.3).SingleLine()
+						ui.Row(c).Gap(7).AlignItems(ui.Center).Children(func() {
+							ui.Text(c, tr.Name).FontSize(22).FontWeight(700).LetterSpacing(-0.3).SingleLine()
+							a.trackTag(c, tr)
+						})
 						a.artistLinks(c, tr, white.Alpha(0.6), white, true).FontSize(15).SingleLine()
 					})
 					a.likeButton(c.Key("like"), tr, 22, white.Alpha(0.7))
+					a.downloadButton(c, tr, 22, white.Alpha(0.7))
 					a.songMenu(c.Key("more"), tr, 22, white.Alpha(0.7)).Margin(0, -8, 0, 0)
 				})
 				a.scrubber(c.Key("np-scrub"), &a.npScrub, white.Alpha(0.18), white.Alpha(0.9), 16, accent.Mix(white, 0.35))
@@ -184,7 +192,7 @@ func (a *app) nowPlayingBody(c *ui.Context, tr *netease.Track, art *artwork, acc
 				ui.Row(c).Height(16).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, clock(pl.Position())).FontSize(11).FontFeatures("tnum").TextColor(white.Alpha(0.5))
 					ui.Spacer(c)
-					qualityBadge(c, pl.Stream())
+					qualityBadge(c, a.pl.Stream(), tr)
 					ui.Spacer(c)
 					status := "-" + clock(pl.Duration()-pl.Position())
 					if pl.Loading() {
@@ -348,17 +356,79 @@ func (a *app) radioChip(c *ui.Context, name string) {
 	}
 }
 
-// qualityBadge marks a lossless stream, as it plays.
-func qualityBadge(c *ui.Context, st *netease.Stream) {
-	if st == nil || !netease.Lossless(st.Level) {
+// trackTag marks the song playing with what it is, beside its name: the
+// same mark the lists show (VIP, 已下架, 不可播), so that a song NetEase
+// charges for is told apart from a free one wherever it is seen.
+func (a *app) trackTag(c *ui.Context, tr *netease.Track) {
+	mark, color := trackMark(tr, a.canPlay(tr), a.pal)
+	if mark == "" {
 		return
 	}
-	label := "无损"
-	if st.Level == "hires" {
-		label = "Hi-Res"
+	ui.Text(c, mark).FontSize(9.5).FontWeight(800).LetterSpacing(0.4).TextColor(color).
+		Padding(1, 5).Radius(4).Border(1, color.Alpha(0.6)).AlignSelf(ui.Center)
+}
+
+// qualityBadge says what plays, in one badge under the progress bar: the
+// quality it streams at, and which of the listener's sources answered for
+// it when it is not NetEase's own. Both are one thing to say, so they are
+// one badge: a gold one for lossless and Hi-Res, and a quiet one for the
+// rest, so that the gold still marks what it always marked.
+func qualityBadge(c *ui.Context, st *netease.Stream, tr *netease.Track) {
+	label, tip := qualityOf(st, tr)
+	if label == "" {
+		return
 	}
-	ui.Text(c, label).FontSize(9.5).FontWeight(800).LetterSpacing(0.6).TextColor(ui.Hex("#f5d58a")).
-		Padding(1, 6).Radius(4).Border(1, ui.Hex("#f5d58a").Alpha(0.55))
+	gold := st != nil && netease.Lossless(st.Level)
+	badge := ui.Text(c, label).FontSize(9.5).FontWeight(700).LetterSpacing(0.4).Padding(1, 6).Radius(4)
+	if gold {
+		badge.TextColor(ui.Hex("#f5d58a")).Border(1, ui.Hex("#f5d58a").Alpha(0.55))
+	} else {
+		badge.TextColor(white.Alpha(0.5)).Border(1, white.Alpha(0.18))
+	}
+	if tip != "" {
+		badge.Tooltip(tip)
+	}
+}
+
+// qualityOf is what the badge says of the stream, and the tip that says
+// where it came from: "无损 · HYW" for a source's lossless file, "极高
+// （320k）" for NetEase's own, and nothing while the song has not begun
+// to stream.
+func qualityOf(st *netease.Stream, tr *netease.Track) (label, tip string) {
+	if st == nil {
+		return "", ""
+	}
+	level, from, url := st.Level, st.Source, st.URL
+	if level == "" {
+		return "", ""
+	}
+	label = qualityName(level)
+	if label == "" {
+		// A level NetEase does not name, as a source that answered at one
+		// of its own: said as the source says it.
+		label = level
+	}
+	switch {
+	case from != "":
+		label += " · " + from
+	case tr.PlayURL != "":
+		label += " · 本机"
+	}
+	if url != "" {
+		tip = shorten(url, 160)
+	}
+	return label, tip
+}
+
+// qualityName is the level a stream plays at, in words: what the badge
+// says, and what the button that saves the song offers.
+func qualityName(level string) string {
+	for _, q := range qualityLevels {
+		if q.level == level {
+			return q.label
+		}
+	}
+	return ""
 }
 
 // stageBar is the slim bar along the foot of the stage: what plays, where
@@ -456,6 +526,63 @@ func (a *app) lyricsPane(c *ui.Context, tr *netease.Track, h float32) {
 	}
 	defer a.quietCard(c, dim, h*0.18)
 	a.timedLines(c, scroll, lines, pos, cur, lag, linesStyle{size: 30, weight: 800, lineHeight: 1.25, quiet: quiet}, nil)
+}
+
+// wireShift makes the player read how far the lyrics are moved from the
+// settings: the app sets it as it starts, and a test sets it too, so
+// that what the buttons change is what the player applies.
+func (a *app) wireShift() {
+	a.pl.LyricsShift = func() time.Duration {
+		return time.Duration(a.settings.LyricsShiftMs) * time.Millisecond
+	}
+}
+
+// lyricsShiftArrows are the two arrows at the right of the window that
+// move the lyrics, with how far they are moved between them: the words of
+// a live take are timed to the record, and run ahead of what is heard, so
+// the listener nudges them until they match. Nothing is written but the
+// seconds, which say what was done rather than what the arrows are.
+func (a *app) lyricsShiftArrows(c *ui.Context) {
+	col := ui.Column(c).Absolute().Right(4).Top(0).Bottom(0).Width(46).Gap(2).AlignItems(ui.Center).Justify(ui.Center)
+	col.Children(func() {
+		if iconButton(c.Key("lyrics-earlier"), iconUp, 16, white.Alpha(0.4), "歌词往前（早一点）").Clicked() {
+			a.shiftLyrics(-lyricsShiftStep)
+		}
+		// How far the words were moved: the seconds, with their sign, and
+		// nothing else. At zero the words are where the song serves them.
+		shift := a.settings.LyricsShiftMs
+		text, color := "0", white.Alpha(0.28)
+		if shift != 0 {
+			text, color = fmt.Sprintf("%+.1f", float64(shift)/1000), white.Alpha(0.8)
+		}
+		ui.Text(c, text).FontSize(11).FontWeight(600).TextColor(color).
+			Tooltip("歌词比声音早，就点上面的箭头；比声音晚，就点下面的。现在 " + text + " 秒")
+		if iconButton(c.Key("lyrics-later"), iconDown, 16, white.Alpha(0.4), "歌词往后（晚一点）").Clicked() {
+			a.shiftLyrics(lyricsShiftStep)
+		}
+	})
+}
+
+// lyricsShiftStep is how far a press moves the lyrics: a tenth of a
+// second, which is as fine as the words are read against the sound.
+const lyricsShiftStep = 100
+
+// shiftLyrics moves the lyrics by ms and keeps the adjustment, so that
+// a song played again needs no adjusting: 0 puts them back as served.
+func (a *app) shiftLyrics(ms int) {
+	next := a.settings.LyricsShiftMs + ms
+	// Between the two, either way: past that the words are not being
+	// matched to the sound any more, and the adjustment is a mistake.
+	if next > 10*1000 {
+		next = 10 * 1000
+	}
+	if next < -10*1000 {
+		next = -10 * 1000
+	}
+	a.settings.LyricsShiftMs = next
+	a.settings.save()
+	a.pl.ShiftLyrics()
+	a.redraw()
 }
 
 // linesStyle is how timedLines sets its lines: the size, weight and
@@ -653,7 +780,8 @@ func (a *app) queuePane(c *ui.Context) {
 		case row.Hovered():
 			row.Background(white.Alpha(0.08))
 		}
-		if !tr.Playable() {
+		canPlay := a.canPlay(tr)
+		if !canPlay {
 			row.Opacity(0.4)
 		}
 		row.Children(func() {
@@ -664,7 +792,7 @@ func (a *app) queuePane(c *ui.Context) {
 			})
 			ui.Text(c, clock(tr.Length())).FontSize(12).FontFeatures("tnum").TextColor(white.Alpha(0.4))
 		})
-		if row.Clicked() && tr.Playable() && !playing {
+		if row.Clicked() && canPlay && !playing {
 			pl.Jump(i)
 		}
 	}).Grow(1).Padding(8, 0, 40, 0).Gap(2)

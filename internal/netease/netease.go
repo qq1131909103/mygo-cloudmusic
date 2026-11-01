@@ -45,6 +45,15 @@ type Track struct {
 	Reason string `json:"reason"`
 	// Privilege is what the listener may do with the track, if known.
 	Privilege *Privilege `json:"privilege"`
+	// PlayURL is where a third-party source streams the track from. A
+	// track that has one plays from there, without NetEase's song URL
+	// being asked for: it is how the app plays music that is not
+	// NetEase's, and needs no account for.
+	PlayURL string `json:"playUrl,omitempty"`
+	// Source names the third-party source a track with a PlayURL came
+	// from, so that a page listing several of them says which is which.
+	// It is empty for NetEase's own tracks.
+	Source string `json:"source,omitempty"`
 	// A podcast's episode plays as a track of its audio, ID, with the
 	// episode's ProgramID, the PodcastID it is in, and what it is about.
 	ProgramID   int64  `json:"programId,omitempty"`
@@ -86,6 +95,10 @@ func (t *Track) ArtistNames() string {
 // privilege says, or else as its fee does for anyone, VIP songs (1) and
 // paid albums (4) giving only a preview.
 func (t *Track) Playable() bool {
+	if t.PlayURL != "" {
+		// A third-party track plays from the address it carries.
+		return true
+	}
 	if t.ProgramID > 0 {
 		// An episode's audio has no privilege: whether it streams, as a
 		// paid one bought, is up to its stream.
@@ -99,8 +112,31 @@ func (t *Track) Playable() bool {
 
 func (t *Track) Length() time.Duration { return time.Duration(t.Duration) * time.Millisecond }
 
-// URL is the track's page on the NetEase website.
+// Paid reports whether NetEase charges for the track: a song of the
+// membership (1), one of an album that must be bought (4), or one whose
+// higher bit rates alone are the membership's (8). It says what the song
+// is, not what the listener may do with it: a membership that covers it
+// plays it like any other, and the app still marks it, so that what is
+// being paid for is told apart from what is free.
+func (t *Track) Paid() bool {
+	// A track of a source, or of this machine, is not the account's to
+	// charge for: a fee carried beside it says nothing.
+	if t.PlayURL != `` {
+		return false
+	}
+	return t.Fee == 1 || t.Fee == 4 || t.Fee == 8
+}
+
+// TakenDown reports whether NetEase has withdrawn the track, as its
+// privilege says: there is nowhere to play it from at all.
+func (t *Track) TakenDown() bool { return t.Privilege != nil && t.Privilege.St < 0 }
+
+// URL is where the track plays from: its page on the NetEase website for
+// one of NetEase's songs, or the stream itself for a third-party track.
 func (t *Track) URL() string {
+	if t.PlayURL != "" {
+		return t.PlayURL
+	}
 	if t.ProgramID > 0 {
 		return apiBase + "/program?id=" + strconv.FormatInt(t.ProgramID, 10)
 	}
@@ -395,6 +431,11 @@ type Stream struct {
 	Type string `json:"type"`
 	// Level is the level served, which may be below the one asked for.
 	Level string `json:"level"`
+	// Source names the third-party source a stream came from, when it is
+	// one of the listener's rather than NetEase's own: the name the
+	// settings keep it under, which is what the app shows beside what
+	// plays.
+	Source string `json:"source,omitempty"`
 	// Gain is how many dB to change the track by to sound as loud as
 	// others, and Peak its loudest sample, 1 at full scale, or 0 if
 	// unknown.
@@ -482,10 +523,16 @@ func Lyrics(id int64) (lrc, translation, yrc string, err error) {
 	return res.Lrc.Lyric, res.Tlyric.Lyric, yrc, nil
 }
 
-// Sized asks the image CDN for a picture of n×n pixels.
+// Sized asks the image CDN for a picture of n×n pixels. A picture that is
+// not the CDN's — a file on this machine, or the art inside a music file,
+// which a third-party track's cover may name — is served as it is, at the
+// size it is.
 func Sized(pic string, n int) string {
 	if pic == "" {
 		return ""
+	}
+	if !strings.HasPrefix(pic, "http://") && !strings.HasPrefix(pic, "https://") && !strings.HasPrefix(pic, "//") {
+		return pic
 	}
 	pic = strings.Replace(pic, "http://", "https://", 1)
 	return fmt.Sprintf("%s?param=%dy%d", pic, n, n)

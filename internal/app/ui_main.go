@@ -135,6 +135,10 @@ func (a *app) load(r route) {
 		a.loadPodcast(r.id)
 	case pagePodcasts:
 		a.loadPodcastTab()
+	case pageLocal:
+		a.loadLocal(false)
+	case pageSource:
+		a.loadSource(false)
 	}
 }
 
@@ -185,6 +189,8 @@ func (a *app) sidebar(c *ui.Context) {
 			a.navItem(c, iconRadio, "私人 FM", route{page: pageFM})
 			a.navItem(c, iconCharts, "排行榜", route{page: pageCharts})
 			a.navItem(c, iconPodcast, "播客", route{page: pagePodcasts})
+			a.navItem(c, iconFolder, "本地音乐", route{page: pageLocal})
+			a.navItem(c, iconHeadset, "第三方音源", route{page: pageSource})
 			if a.searched.query != "" {
 				a.navItem(c, iconSearch, "搜索结果", a.searched)
 			}
@@ -338,6 +344,27 @@ func (a *app) pageTop(c *ui.Context) {
 			}
 		})
 	}
+	a.pinButton(c)
+}
+
+// pinButton keeps the window above the others, or lets it go: a window
+// that stays on top is wanted while a song plays over other work, and a
+// listener who wants it down should not have to find a menu for it.
+func (a *app) pinButton(c *ui.Context) {
+	if a.win == nil {
+		return
+	}
+	on := a.win.IsAlwaysOnTop()
+	ui.Row(c).Absolute().Top(0).Right(c.TitleBar().Right + 14).Height(topBar(c)).AlignItems(ui.Center).Children(func() {
+		icon, label, color := iconPin, "窗口置顶", a.pal.muted
+		if on {
+			icon, label, color = iconPinFill, "取消置顶", a.pal.accent
+		}
+		if iconButton(c.Key("pin"), icon, 17, color, label).Clicked() {
+			a.win.SetAlwaysOnTop(!on)
+			a.redraw()
+		}
+	})
 }
 
 func (a *app) content(c *ui.Context) {
@@ -371,6 +398,10 @@ func (a *app) content(c *ui.Context) {
 		a.podcastPage(c)
 	case pagePodcasts:
 		a.podcastsPage(c)
+	case pageLocal:
+		a.localPage(c)
+	case pageSource:
+		a.sourcePage(c)
 	}
 }
 
@@ -441,7 +472,7 @@ func dailyRenewed(loaded, now time.Time) bool {
 func (a *app) loadPlaylist(id int64, thenPlay bool) {
 	if pl := a.playlists[id]; pl != nil {
 		if thenPlay {
-			a.pl.PlayQueue(pl.Tracks, firstPlayable(pl.Tracks))
+			a.pl.PlayQueue(pl.Tracks, a.firstPlayableFor(pl.Tracks))
 		}
 		return
 	}
@@ -460,7 +491,7 @@ func (a *app) loadPlaylist(id int64, thenPlay bool) {
 			}
 			a.playlists[id] = pl
 			if thenPlay {
-				a.pl.PlayQueue(pl.Tracks, firstPlayable(pl.Tracks))
+				a.pl.PlayQueue(pl.Tracks, a.firstPlayableFor(pl.Tracks))
 			}
 		})
 	}()
@@ -469,6 +500,19 @@ func (a *app) loadPlaylist(id int64, thenPlay bool) {
 func firstPlayable(tracks []netease.Track) int {
 	for i := range tracks {
 		if tracks[i].Playable() {
+			return i
+		}
+	}
+	return 0
+}
+
+// firstPlayableFor is firstPlayable as a listener who keeps third-party
+// sources hears it: a song NetEase will not serve is one of them, when a
+// source can find where it plays. It is what a list starts playing from,
+// so that the first song of it is one that plays.
+func (a *app) firstPlayableFor(tracks []netease.Track) int {
+	for i := range tracks {
+		if a.canPlay(&tracks[i]) {
 			return i
 		}
 	}
