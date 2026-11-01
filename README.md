@@ -24,6 +24,34 @@
 - 歌词时间偏移：现场版、翻录的歌词对不上时，用窗口右侧的箭头逐 0.1 秒微调
 - 窗口置顶开关
 
+## 截图
+
+第三方音源页：搜索框回车即搜「网上」，右侧漏斗切换音源（洛雪脚本 / HTTP 接口 / 歌单链接 / 本机文件夹）。
+
+![第三方音源页与音源选择器](docs/third-party-sources/01-third-party-source-search.png)
+
+音源选择器展开：逐个勾选参与搜索的音源。
+
+![音源选择器菜单](docs/third-party-sources/02-source-picker-menu.png)
+
+本机音乐页：扫描后按格式打标记，能播的直接播，缺封面歌词的按「歌名 + 歌手」自动补齐。
+
+![本地音乐页与格式标记](docs/third-party-sources/03-local-music-formats.png)
+
+列表每行悬停出现下载按钮，点一下就从最高音质往下试，文件连同封面、歌词一起落盘。
+
+![列表每行的下载按钮](docs/third-party-sources/07-list-row-download.png)
+
+歌词对不上时，窗口右侧竖排箭头逐 0.1 秒微调（现场版、翻录版常用）。
+
+![歌词时间偏移 +0.4 秒](docs/third-party-sources/05-lyrics-offset-plus-0.4.png)
+
+顶栏右上角的置顶开关，实心表示已置顶，再点一下取消。
+
+![顶栏置顶按钮](docs/third-party-sources/06-titlebar-pin-button.png)
+
+更多说明与逐项细节见 [docs/third-party-sources/features.md](docs/third-party-sources/features.md)。
+
 ## 构建
 
 需要 Go 1.27+。
